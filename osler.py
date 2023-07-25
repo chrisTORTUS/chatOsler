@@ -39,6 +39,11 @@ import torch
 import threading
 import subprocess
 
+from dotenv import load_dotenv
+
+load_dotenv()
+openai.api_key = os.environ['OPENAI_API_KEY']
+
 class Actor:
 	def __init__(self) -> None:
 		self.consultation_transcript = ""
@@ -451,6 +456,9 @@ class Actor:
 		self.letters_hx = letters
 
 	def glance_patient_search_results(self):
+		# telling the user that a glance is being done
+		txt.insert(END, "\n" + "OSLER -> Analysing the screen...")
+
 		parsed_screen = parse_screen()
 		sys_instr = '''You are a medical admin assistant with one simple task, which is, given a text representation of a Epic EHR patient lookup window for some MRN (medical record number), classify whether:
 		
@@ -1170,10 +1178,10 @@ class Actor:
 		conversation.append({"role": "user", "content": parsed_screen})
 
 		payload = {
-		"model": "gpt-4",
+		"model": "gpt-4-32k",
 		"messages": conversation,
 		"temperature": 0,
-		"max_tokens": 200
+		"max_tokens": 1
 		# "stop": "\n"
 		}
 		response = requests.post(url, headers=headers, json=payload)
@@ -1185,12 +1193,12 @@ class Actor:
 			print(f"Error: {response.status_code} - {response.text}")
 
 	def new_consultation_mrn(self):
-		self.activate_application('Citrix Viewer')
 		while True:
 			# screenshot and parse current screen
 			parsed_screen = parse_screen()
 			current_screen = match_screen(parsed_screen)
 			txt.insert(END, "\n" + "OSLER -> The current epic screen is: " + current_screen)
+			self.activate_application('Citrix Viewer')
 			if current_screen == 'schedule':
 				# press f10 for search activities bar
 				pyautogui.press('f10')
@@ -1207,7 +1215,6 @@ class Actor:
 				pyautogui.press('enter')
 				time.sleep(2)
 			if current_screen == 'patient_lookup':
-				self.activate_application('Citrix Viewer')
 				print('global_mrn: ', self.global_mrn)
 				pyperclip.copy(self.global_mrn)
 				pyautogui.keyDown('command')
@@ -1216,12 +1223,85 @@ class Actor:
 				time.sleep(2)
 
 				pyautogui.press('enter')
+				time.sleep(1)
 
 				# at this point there are three different possible outcomes so need to use UIED to check and handle
+				mrn_search_outcome, usage = self.glance_patient_search_results()
+				print('mrn search outcome: ', mrn_search_outcome)
+				if mrn_search_outcome == '1':
+					txt.insert(END, "\n" + "OSLER -> Great! This MRN matches exactly one patient")
+					pyautogui.press('enter')
+					time.sleep(1)
+					pyautogui.press('enter')
+					time.sleep(5)
+				elif mrn_search_outcome == '2':
+					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN matches more than one patient. Could you tell me which patient you mean?")
+				elif mrn_search_outcome == '3':
+					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN does not match any patient.")
+				else:
+					print('error with processing the result from glancing')
 
+			if current_screen == 'chart_review':
+				# ctrl space
+				pyautogui.keyDown('ctrl')
+				pyautogui.press('space')
+				pyautogui.keyUp('ctrl')
+				time.sleep(2)
 
+				# search for write note activity
+				pyperclip.copy('write note')
+				pyautogui.keyDown('command')
+				pyautogui.press('v')
+				pyautogui.keyUp('command')
+				time.sleep(2)
 
-				
+				# select write note activity
+				pyautogui.press('down')
+				time.sleep(1)
+				pyautogui.press('enter')
+				time.sleep(2)
+				pyautogui.press('enter')
+				time.sleep(5)
+
+			if current_screen == 'documentation':
+				# click the create note button
+				self.click_screenshot('create_note.png', confidence=0.6)
+				time.sleep(2)
+				pyautogui.press('f3')
+				time.sleep(2)
+
+				# release the function button
+				pyautogui.keyUp('fn')
+				time.sleep(1)
+
+				# add smart text medicines and problem list
+				pyautogui.write('.med', interval=0.1)
+				time.sleep(1)
+				pyautogui.press('enter')
+				time.sleep(1)
+
+				# add smart text medicines and problem list
+				pyautogui.write('.diagprob', interval=0.1)
+				time.sleep(1)
+				pyautogui.press('enter')
+				time.sleep(1)
+
+				# copying the patient medical history and medications and saving to memory
+				pyautogui.keyDown('command')
+				pyautogui.press('a')
+				pyautogui.keyUp('command')
+
+				time.sleep(1)
+
+				pyautogui.keyDown('command')
+				pyautogui.press('c')
+				pyautogui.keyUp('command')
+
+				time.sleep(0.5)
+				pyautogui.press('right')
+
+				self.med_hx = pyperclip.paste()
+
 
 	def transcribe_consultation(self):
 		# add header
@@ -1778,10 +1858,11 @@ def match_screen(current_screen):
 	screens_ls = [
 		epic_screens.PATIENT_LOOKUP,
 		epic_screens.SCHEDULE,
-		epic_screens.PATIENT_PAGE
+		epic_screens.CHART_REVIEW,
+		epic_screens.DOCUMENTATION
 	]
 
-	screen_labels = ['patient_lookup', 'schedule', 'patient_info']
+	screen_labels = ['patient_lookup', 'schedule', 'chart_review', 'documentation']
 
 	epic_embeddings = model.encode(screens_ls)
 	screen_embeddings = model.encode(current_screen)
@@ -1834,24 +1915,22 @@ def msg2task(user_msg):
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 actor = Actor()
-result = actor.glance_patient_search_results()
-print('result: ', result)
 
-# global_mrn = ''
+global_mrn = ''
 
-# lable1 = Label(root, bg=BG_COLOR, fg=TEXT_COLOR, text="OSLER", font=FONT_BOLD, pady=10, width=20, height=1).grid(
-# 	row=0)
+lable1 = Label(root, bg=BG_COLOR, fg=TEXT_COLOR, text="OSLER", font=FONT_BOLD, pady=10, width=20, height=1).grid(
+	row=0)
  
-# txt = Text(root, bg=BG_COLOR, fg=TEXT_COLOR, font=FONT, width=60)
-# txt.grid(row=1, column=0, columnspan=2)
+txt = Text(root, bg=BG_COLOR, fg=TEXT_COLOR, font=FONT, width=60)
+txt.grid(row=1, column=0, columnspan=2)
  
-# scrollbar = Scrollbar(txt)
-# scrollbar.place(relheight=1, relx=0.974)
+scrollbar = Scrollbar(txt)
+scrollbar.place(relheight=1, relx=0.974)
  
-# e = Entry(root, bg="#2C3E50", fg=TEXT_COLOR, font=FONT, width=55)
-# e.grid(row=2, column=0)
+e = Entry(root, bg="#2C3E50", fg=TEXT_COLOR, font=FONT, width=55)
+e.grid(row=2, column=0)
  
-# send_button = Button(root, text="Send", font=FONT_BOLD, bg=BG_GRAY,
-# 			  command=send).grid(row=2, column=1)
+send_button = Button(root, text="Send", font=FONT_BOLD, bg=BG_GRAY,
+			  command=send).grid(row=2, column=1)
  
-# root.mainloop()
+root.mainloop()
