@@ -271,8 +271,8 @@ class Actor:
 		#     self.query_orders()
 		# elif intent == intents.QUERY_MEDS:
 		#     self.query_meds()
-		# elif intent == intents.WRITE_LETTER:
-		#     self.write_referral()
+		elif intent == intents.WRITE_LETTER:
+			self.write_referral()
 		# elif intent == intents.PLACE_ORDERS:
 		#     self.place_orders()
 		# elif intent == intents.FILE_DIAGNOSES:
@@ -1235,9 +1235,11 @@ class Actor:
 					pyautogui.press('enter')
 					time.sleep(5)
 				elif mrn_search_outcome == '2':
-					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN matches more than one patient. Could you tell me which patient you mean?")
+					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN matches more than one patient.")
+					break
 				elif mrn_search_outcome == '3':
-					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN does not match any patient.")
+					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN does not match any patient. Please try again.")
+					break
 				else:
 					print('error with processing the result from glancing')
 
@@ -1301,6 +1303,7 @@ class Actor:
 				pyautogui.press('right')
 
 				self.med_hx = pyperclip.paste()
+				break
 
 
 	def transcribe_consultation(self):
@@ -1553,9 +1556,11 @@ class Actor:
 		time.sleep(length_in_seconds + 1)
 
 	def write_referral(self):
+		self.activate_application('Citrix Viewer')
+
 		# press f10 for search activities bar
 		pyautogui.press('f10')
-		time.sleep(1)
+		time.sleep(2)
 
 		# search for write note activity
 		pyperclip.copy('letter')
@@ -1563,79 +1568,64 @@ class Actor:
 		pyautogui.press('v')
 		pyautogui.keyUp('command')
 		pyautogui.press('enter')
-		time.sleep(2)
+		time.sleep(3)
 
 		# input MRN 111
-		pyperclip.copy(self.patient_mrn_digits)
+		pyperclip.copy(self.global_mrn)
+		pyperclip.copy('111')
 		pyautogui.keyDown('command')
 		pyautogui.press('v')
 		pyautogui.keyUp('command')
-		time.sleep(2)
+		time.sleep(3)
 
 		# press enter 3 times
 		pyautogui.press('enter')
-		time.sleep(2)
+		time.sleep(3)
 		pyautogui.press('enter')
-		time.sleep(2)
+		time.sleep(3)
 		pyautogui.press('enter')
-		time.sleep(6)
+		time.sleep(8)
 
 		# select clinic letter
-		self.click_screenshot("select_clinic_letter.png")
-		time.sleep(2)
+		self.click_screenshot("select_clinic_letter.png", confidence=0.6)
+		time.sleep(3)
 
 		# add recipient as patient 1
 		pyautogui.keyDown('command')
 		pyautogui.keyDown('option')
 		pyautogui.press('1')
-		time.sleep(2)
+		time.sleep(3)
 
 		#play the letter pending audio file
-		PLAYER.play_song("letter_pending.wav")
-		time.sleep(4)
+		# PLAYER.play_song("letter_pending.wav")
+		# time.sleep(4)
 
-		# get GPT to write referral letter
-		referral_letter_prompt = 'Write a letter to the patients GP including all of the following information, include the patients background medical history, medications, a summary of the consultation and a plan:\n\n'
-		referral_letter_prompt += self.transcript_summary
+		# # get GPT to write referral letter
+		# referral_letter_prompt = 'Write a letter to the patients GP including all of the following information, include the patients background medical history, medications, a summary of the consultation and a plan:\n\n'
+		# referral_letter_prompt += self.transcript_summary
 
-		response=openai.Completion.create(
-		model="text-davinci-003",
-		prompt=referral_letter_prompt,
-		max_tokens=1500,
-		temperature=0
-		)
+		# response=openai.Completion.create(
+		# model="text-davinci-003",
+		# prompt=referral_letter_prompt,
+		# max_tokens=1500,
+		# temperature=0
+		# )
 
-		referral_letter = json.loads(str(response))
-		print(referral_letter['choices'][0]['text'])
+		# referral_letter = json.loads(str(response))
+		# print(referral_letter['choices'][0]['text'])
 
 
-		# select clinic letter text area
-		self.click_screenshot("clinic_letter_box.png")
-		time.sleep(1)
-		self.click_screenshot("clinic_letter_box.png")
-		time.sleep(0.5)
-		pyperclip.copy(referral_letter['choices'][0]['text'])
-		pyautogui.keyDown('command')
-		pyautogui.press('v')
-		pyautogui.keyUp('command')
+		# # select clinic letter text area
+		# self.click_screenshot("clinic_letter_box.png")
+		# time.sleep(1)
+		# self.click_screenshot("clinic_letter_box.png")
+		# time.sleep(0.5)
+		# pyperclip.copy(referral_letter['choices'][0]['text'])
+		# pyautogui.keyDown('command')
+		# pyautogui.press('v')
+		# pyautogui.keyUp('command')
  
-# GUI
-root = Tk()
-root.title("OSLER")
- 
-BG_GRAY = "#ABB2B9"
-BG_COLOR = "#17202A"
-TEXT_COLOR = "#EAECEE"
- 
-FONT = "Helvetica 14"
-FONT_BOLD = "Helvetica 13 bold"
-RESIZE_WIDTH = 1280
-RESIZE_HEIGHT = 1080
-# DEVICE_SIZE = (1440, 900)
-DEVICE_SIZE = (1791, 1119)
 
-from google.oauth2 import service_account
-credentials = service_account.Credentials.from_service_account_file('./tortus-374118-e15fd1ca5b60.json')
 
 
 def init_ml_client(subscription_id, resource_group, workspace):
@@ -1910,6 +1900,25 @@ def msg2task(user_msg):
 		
 	# perform task
 	actor.act(intent)
+
+# GUI
+root = Tk()
+root.title("OSLER")
+ 
+BG_GRAY = "#ABB2B9"
+BG_COLOR = "#17202A"
+TEXT_COLOR = "#EAECEE"
+ 
+FONT = "Helvetica 14"
+FONT_BOLD = "Helvetica 13 bold"
+RESIZE_WIDTH = 1280
+RESIZE_HEIGHT = 1080
+# DEVICE_SIZE = (1440, 900)
+DEVICE_SIZE = (1791, 1119)
+
+from google.oauth2 import service_account
+credentials = service_account.Credentials.from_service_account_file('./tortus-374118-e15fd1ca5b60.json')
+
 
 # to prevent the huggingface tokenizer parallelisation error
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
