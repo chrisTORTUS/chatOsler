@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from tkinter import *
 import intents
 from sentence_transformers import SentenceTransformer
