@@ -38,11 +38,82 @@ from sklearn.metrics.pairwise import cosine_similarity
 import torch
 import threading
 import subprocess
-
 from dotenv import load_dotenv
+from gpt import ask_gpt
 
 load_dotenv()
 openai.api_key = os.environ['OPENAI_API_KEY']
+
+# Audio recording parameters
+RATE = 16000
+CHUNK = int(RATE / 10)  # 100ms
+
+class MicrophoneStream(object):
+    """Opens a recording stream as a generator yielding the audio chunks."""
+
+    def __init__(self, rate, chunk):
+        self._rate = rate
+        self._chunk = chunk
+
+        # Create a thread-safe buffer of audio data
+        self._buff = queue.Queue()
+        self.closed = True
+
+    def __enter__(self):
+        self._audio_interface = pyaudio.PyAudio()
+        self._audio_stream = self._audio_interface.open(
+            format=pyaudio.paInt16,
+            # The API currently only supports 1-channel (mono) audio
+            # https://goo.gl/z757pE
+            channels=1,
+            rate=self._rate,
+            input=True,
+            frames_per_buffer=self._chunk,
+            # Run the audio stream asynchronously to fill the buffer object.
+            # This is necessary so that the input device's buffer doesn't
+            # overflow while the calling thread makes network requests, etc.
+            stream_callback=self._fill_buffer,
+        )
+
+        self.closed = False
+
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self._audio_stream.stop_stream()
+        self._audio_stream.close()
+        self.closed = True
+        # Signal the generator to terminate so that the client's
+        # streaming_recognize method will not block the process termination.
+        self._buff.put(None)
+        self._audio_interface.terminate()
+
+    def _fill_buffer(self, in_data, frame_count, time_info, status_flags):
+        """Continuously collect data from the audio stream, into the buffer."""
+        self._buff.put(in_data)
+        return None, pyaudio.paContinue
+
+    def generator(self):
+        while not self.closed:
+            # Use a blocking get() to ensure there's at least one chunk of
+            # data, and stop iteration if the chunk is None, indicating the
+            # end of the audio stream.
+            chunk = self._buff.get()
+            if chunk is None:
+                return
+            data = [chunk]
+
+            # Now consume whatever other data's still buffered.
+            while True:
+                try:
+                    chunk = self._buff.get(block=False)
+                    if chunk is None:
+                        return
+                    data.append(chunk)
+                except queue.Empty:
+                    break
+
+            yield b"".join(data)
 
 class Actor:
 	def __init__(self) -> None:
@@ -1267,7 +1338,7 @@ class Actor:
 
 			if current_screen == 'documentation':
 				# click the create note button
-				self.click_screenshot('create_note.png', confidence=0.6)
+				# self.click_screenshot('create_note.png', confidence=0.6)
 				time.sleep(2)
 				pyautogui.press('f3')
 				time.sleep(2)
@@ -1307,6 +1378,9 @@ class Actor:
 
 
 	def transcribe_consultation(self):
+		# activate Epic window
+		self.activate_application('Citrix Viewer')
+
 		# add header
 		pyperclip.copy('\n\n--------- Consultation Transcription ---------\n\n')
 		pyautogui.keyDown('command')
@@ -1380,6 +1454,17 @@ class Actor:
 			"Content-Type": "application/json",
 			"Authorization": "Bearer " + openai.api_key
 		}
+		SOAP_user_msg_template = """
+		MEDICAL HISTORY:
+		------------------
+		$medical_history
+		------------------
+
+		CONSULTATION TRANSCRIPT:
+		------------------
+		$consultation_transcript
+		------------------
+		"""
 
 		system_instruction = '''
 		You are a medical office assistant drafting documentation for a physician. You will be provided with a MEDICAL HISTORY and a CONSULTATION TRANSCRIPT. DO NOT ADD any content that isn't specifically mentioned in the CONSULTATION TRANSCRIPT or the MEDICAL HISTORY. From the attached transcript and medical history, generate a SOAP note based on the below template format for the physician to review, include all the relevant information and do not include any information that isn't explicitly mentioned in the transcript.If nothing is mentioned just returned[NOT MENTIONED].
@@ -1922,6 +2007,9 @@ credentials = service_account.Credentials.from_service_account_file('./tortus-37
 
 # to prevent the huggingface tokenizer parallelisation error
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# set google speech-to-text application credentials
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/Users/christophertan/Desktop/osler1/tortus-374118-e15fd1ca5b60.json"
 
 actor = Actor()
 

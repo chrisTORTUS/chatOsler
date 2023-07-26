@@ -1,0 +1,65 @@
+{
+  "name": "extract_metadata",
+  "description": "Extracts follow up actions (Orders and Medicines and Diagnoses) from consultation transcript",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "orders": {
+        "type": "array",
+        "description": "An array of objects representing the ordered follow-up actions for a patient",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the ordered item for the patient"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Reasoning behind ordering this item for the patient"
+            }
+          }
+        }
+      },
+      "medicine": {
+        "type": "array",
+        "description": "An array of objects representing the medicines prescribed to a patient",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the medicine prescribed"
+            },
+            "dosage": {
+              "type": "string",
+              "description": "Amount and duration of prescription"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Reasoning behind prescribing this medicine for the patient"
+            }
+          }
+        }
+      },
+      "visit_diagnoses": {
+        "type": "array",
+        "description": "An array of objects representing the diagnoses from the consultation transcript",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the visit diagnosis from the consultation transcript"
+            },
+            "diagnosis_reason": {
+              "type": "string",
+              "description": "The explanation for the diagnosis as mentioned by the doctor"
+            }
+          }
+        }
+      }
+    },
+    "required": ["orders", "medicine", "visit_diagnoses"]
+  }
+}
