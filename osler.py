@@ -54,77 +54,78 @@ CHUNK = int(RATE / 10)  # 100ms
 PLAYER = MPyg123Player()
 
 class MicrophoneStream(object):
-    """Opens a recording stream as a generator yielding the audio chunks."""
+	"""Opens a recording stream as a generator yielding the audio chunks."""
 
-    def __init__(self, rate, chunk):
-        self._rate = rate
-        self._chunk = chunk
+	def __init__(self, rate, chunk):
+		self._rate = rate
+		self._chunk = chunk
 
-        # Create a thread-safe buffer of audio data
-        self._buff = queue.Queue()
-        self.closed = True
+		# Create a thread-safe buffer of audio data
+		self._buff = queue.Queue()
+		self.closed = True
 
-    def __enter__(self):
-        self._audio_interface = pyaudio.PyAudio()
-        self._audio_stream = self._audio_interface.open(
-            format=pyaudio.paInt16,
-            # The API currently only supports 1-channel (mono) audio
-            # https://goo.gl/z757pE
-            channels=1,
-            rate=self._rate,
-            input=True,
-            frames_per_buffer=self._chunk,
-            # Run the audio stream asynchronously to fill the buffer object.
-            # This is necessary so that the input device's buffer doesn't
-            # overflow while the calling thread makes network requests, etc.
-            stream_callback=self._fill_buffer,
-        )
+	def __enter__(self):
+		self._audio_interface = pyaudio.PyAudio()
+		self._audio_stream = self._audio_interface.open(
+			format=pyaudio.paInt16,
+			# The API currently only supports 1-channel (mono) audio
+			# https://goo.gl/z757pE
+			channels=1,
+			rate=self._rate,
+			input=True,
+			frames_per_buffer=self._chunk,
+			# Run the audio stream asynchronously to fill the buffer object.
+			# This is necessary so that the input device's buffer doesn't
+			# overflow while the calling thread makes network requests, etc.
+			stream_callback=self._fill_buffer,
+		)
 
-        self.closed = False
+		self.closed = False
 
-        return self
+		return self
 
-    def __exit__(self, type, value, traceback):
-        self._audio_stream.stop_stream()
-        self._audio_stream.close()
-        self.closed = True
-        # Signal the generator to terminate so that the client's
-        # streaming_recognize method will not block the process termination.
-        self._buff.put(None)
-        self._audio_interface.terminate()
+	def __exit__(self, type, value, traceback):
+		self._audio_stream.stop_stream()
+		self._audio_stream.close()
+		self.closed = True
+		# Signal the generator to terminate so that the client's
+		# streaming_recognize method will not block the process termination.
+		self._buff.put(None)
+		self._audio_interface.terminate()
 
-    def _fill_buffer(self, in_data, frame_count, time_info, status_flags):
-        """Continuously collect data from the audio stream, into the buffer."""
-        self._buff.put(in_data)
-        return None, pyaudio.paContinue
+	def _fill_buffer(self, in_data, frame_count, time_info, status_flags):
+		"""Continuously collect data from the audio stream, into the buffer."""
+		self._buff.put(in_data)
+		return None, pyaudio.paContinue
 
-    def generator(self):
-        while not self.closed:
-            # Use a blocking get() to ensure there's at least one chunk of
-            # data, and stop iteration if the chunk is None, indicating the
-            # end of the audio stream.
-            chunk = self._buff.get()
-            if chunk is None:
-                return
-            data = [chunk]
+	def generator(self):
+		while not self.closed:
+			# Use a blocking get() to ensure there's at least one chunk of
+			# data, and stop iteration if the chunk is None, indicating the
+			# end of the audio stream.
+			chunk = self._buff.get()
+			if chunk is None:
+				return
+			data = [chunk]
 
-            # Now consume whatever other data's still buffered.
-            while True:
-                try:
-                    chunk = self._buff.get(block=False)
-                    if chunk is None:
-                        return
-                    data.append(chunk)
-                except queue.Empty:
-                    break
+			# Now consume whatever other data's still buffered.
+			while True:
+				try:
+					chunk = self._buff.get(block=False)
+					if chunk is None:
+						return
+					data.append(chunk)
+				except queue.Empty:
+					break
 
-            yield b"".join(data)
+			yield b"".join(data)
 
 class Actor:
 	def __init__(self) -> None:
 		self.consultation_transcript = ""
 		self.transcript_summary = ""
-		self.consultation_entities = {}
+		self.consultation_entities = {'orders': [{'name': 'X-ray of upper chest', 'reason': 'Patient has been experiencing chest pain'}, {'name': 'MRI of stomach', 'reason': "Investigation related to patient's chest pain"}, {'name': '24-hour RVCG', 'reason': 'Further investigation of reported chest pain'}], 'medicine': [{'name': 'Blood thinners', 'dosage': 'Unspecified', 'reason': 'Chest pain'}, {'name': 'Ibuprofen', 'dosage': 'Unspecified', 'reason': 'Chest pain'}], 'visit_diagnoses': []}
+		# self.consultation_entities = {}
 		self.mrn_flag = False
 		self.user_utterance_text = ''
 		self.patient_mrn_str = ''
@@ -349,10 +350,10 @@ class Actor:
 		#     self.query_meds()
 		elif intent == intents.WRITE_LETTER:
 			self.write_referral()
-		# elif intent == intents.PLACE_ORDERS:
-		#     self.place_orders()
-		# elif intent == intents.FILE_DIAGNOSES:
-		#     self.file_diagnoses()
+		elif intent == intents.PLACE_ORDERS:
+			self.place_orders()
+		elif intent == intents.FILE_DIAGNOSES:
+			self.file_diagnoses()
 		# elif intent == intents.ANSWER_QUESTIONS:
 		#     self.ask_general_consultation_question()
 		else:
@@ -601,9 +602,9 @@ class Actor:
 				if mrn_search_outcome == '1':
 					txt.insert(END, "\n" + "OSLER -> Great! This MRN matches exactly one patient")
 					pyautogui.press('enter')
-					time.sleep(1)
+					time.sleep(2)
 					pyautogui.press('enter')
-					time.sleep(5)
+					time.sleep(8)
 				elif mrn_search_outcome == '2':
 					txt.insert(END, "\n" + "OSLER -> Sorry, this MRN matches more than one patient.")
 					break
@@ -702,6 +703,9 @@ class Actor:
 		print(str(self.consultation_entities))
 
 	def place_orders(self):
+		# bring Epic window to the front
+		self.activate_application('Citrix Viewer')
+
 		orders_list = self.get_orders_from_gpt_call(self.consultation_entities)
 		for order in orders_list:
 			pyautogui.keyDown('command')
@@ -726,8 +730,14 @@ class Actor:
 			pyautogui.keyUp('option')
 			time.sleep(1)
 
+		pyautogui.press('escape')
+
 	def file_diagnoses(self):
 		diagnosis_list = self.get_diagnoses_from_gpt_call(self.consultation_entities)
+
+		# bring Epic window to the front
+		self.activate_application('Citrix Viewer')
+
 		pyautogui.keyDown('command')
 		pyautogui.press('g')
 		pyautogui.keyUp('command')
@@ -956,7 +966,6 @@ class Actor:
 
 		# input MRN 111
 		pyperclip.copy(self.global_mrn)
-		pyperclip.copy('111')
 		pyautogui.keyDown('command')
 		pyautogui.press('v')
 		pyautogui.keyUp('command')
