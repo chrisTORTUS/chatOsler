@@ -43,6 +43,13 @@ from dotenv import load_dotenv
 from gpt import ask_gpt
 import gpt_prompts
 from mpyg321.MPyg123Player import MPyg123Player # or MPyg321Player if you installed mpg321
+from threading import Thread
+import threading
+from picovoice import Picovoice
+from pvrecorder import PvRecorder
+import platform
+import pvleopard
+
 
 load_dotenv()
 openai.api_key = os.environ['OPENAI_API_KEY']
@@ -51,7 +58,9 @@ openai.api_key = os.environ['OPENAI_API_KEY']
 RATE = 16000
 CHUNK = int(RATE / 10)  # 100ms
 
+LEOPARD = pvleopard.create(access_key=os.environ['PICOVOICE_ACCESS_KEY'], model_path='./picovoice/transcribeUserResponse-leopard-v1.2.0-23-06-26--13-50-08.pv')
 PLAYER = MPyg123Player()
+
 
 class MicrophoneStream(object):
 	"""Opens a recording stream as a generator yielding the audio chunks."""
@@ -119,6 +128,200 @@ class MicrophoneStream(object):
 					break
 
 			yield b"".join(data)
+
+
+class PicovoiceThread(Thread):
+	def __init__(self, label, access_key):
+		super().__init__()
+
+		# Picovoice access key
+		self._access_key = access_key
+
+		# tkinter gui
+		self._label = label
+		self._width = 350
+		self._height = 350
+
+		# speech recognition variables
+		self._is_ready = False
+		self._stop = False
+		self._is_stopped = False
+
+	@staticmethod
+	def _keyword_path():
+		'''
+		Method to retrieve Porcupine wake word.
+		'''
+		if platform.system() == "Darwin":
+			return os.path.join(
+				os.path.dirname(__file__),
+				"./picovoice/Hey-Osler_en_mac_v2_2_0.ppn")
+		elif platform.system() == 'Windows':
+			return os.path.join(
+				os.path.dirname(__file__),
+				"./picovoice/hey-osler_en_windows_v2_1_0.ppn")
+		else:
+			raise ValueError("unsupported platform '%s'" % platform.system())
+
+	@staticmethod
+	def _context_path():
+		'''
+		Method to retrieve Rhino context file (speech-to-intent).
+		'''
+		if platform.system() == "Darwin":
+			return os.path.join(
+				os.path.dirname(__file__),
+				"./picovoice/epic_en_mac_v2_2_0.rhn")
+		elif platform.system() == 'Windows':
+			return os.path.join(
+				os.path.dirname(__file__),
+				"./picovoice/Clinical-Demo_en_mac_v2_1_0.rhn")
+		else:
+			raise ValueError("unsupported platform '%s'" % platform.system())
+
+	def match_intent(self, utterance):
+		model = SentenceTransformer("sentence-transformers/multi-qa-mpnet-base-dot-v1")
+
+		intents_ls = [
+			intents.START_CONSULTATION_NOTE,
+			intents.TRANSCRIBE_CONSULTATION,
+			# intents.SUMMARISE_CONSULTATION,
+			intents.PLACE_ORDERS,
+			intents.FILE_DIAGNOSES
+			# intents.ANSWER_QUESTIONS,
+			# intents.WRITE_LETTER,
+			# intents.QUERY_MEDS,
+			# intents.QUERY_ORDERS,
+    ]
+
+		intent_embeddings = model.encode(intents_ls)
+		utterance_embeddings = model.encode(utterance)
+		
+		cos_scores = cosine_similarity(utterance_embeddings.reshape(1, -1), intent_embeddings)
+		cos_scores_torch = torch.from_numpy(cos_scores)
+		cos_max = torch.max(cos_scores_torch).item()
+		cos_argmax = torch.argmax(cos_scores_torch, dim=1)
+		cos = cos_argmax[0].item()
+
+		intent = intents_ls[cos]
+		print(f"Intent matched: {intent}")
+
+		return intent, cos_max
+
+	def _wake_word_callback(self):
+		img = Image.open("demo_screenshots/osler_awake_smaller.png")
+		osler_awake = ImageTk.PhotoImage(img)
+		self._label.configure(image=osler_awake)
+		self._label.image = osler_awake
+
+		# receive and transcribe the user utterance. Records for 6 seconds currently. 
+		recorder.stop()
+		self.get_user_utterance()
+		actor.user_utterance_text = self.leopard_transcribe()
+
+		# match the utterance to an intent
+		intent, score = self.match_intent(actor.user_utterance_text)
+		print(score)
+
+		# perform the action if match score above a cosine similarity threshold. Currently set at 0.5
+		if float(score) > 0.6:
+			self.osler_thinking()
+			actor.act(intent)
+		else:
+			#play the audio file
+			PLAYER.play_song("no_matched_intent.wav")
+			time.sleep(5)
+
+		# resume the recorder
+		recorder.start()
+		self.osler_sleeping()
+
+	def osler_thinking(self):
+		img = Image.open("demo_screenshots/osler_thinking_smaller.png")
+		osler_thinking = ImageTk.PhotoImage(img)
+		self._label.configure(image=osler_thinking)
+		self._label.image = osler_thinking
+
+
+	def osler_sleeping(self):
+		img = Image.open("demo_screenshots/osler_sleep_smaller.png")
+		osler_sleeping = ImageTk.PhotoImage(img)
+		self._label.configure(image=osler_sleeping)
+		self._label.image = osler_sleeping
+
+	def perform_action(self, intent):
+		self.osler_thinking()
+		recorder.stop()
+		actor.act(intent)
+		recorder.start()
+		self.osler_sleeping()
+
+	def get_user_utterance(self):
+		fs = 44100  # Sample rate
+		seconds = 6  # Duration of recording
+
+		myrecording = sd.rec(int(seconds * fs), samplerate=fs, channels=1)
+		sd.wait()  # Wait until recording is finished
+		write('user_utterance.wav', fs, myrecording)  # Save as WAV file
+
+	def leopard_transcribe(self):
+		transcript, words = LEOPARD.process_file('user_utterance.wav')
+		print(transcript)
+		for word in words:
+			print(
+			"{word=\"%s\" start_sec=%.2f end_sec=%.2f confidence=%.2f}"
+			% (word.word, word.start_sec, word.end_sec, word.confidence))
+		return transcript
+		
+	def _inference_callback(self, inference):
+		pass
+
+	def run(self):
+		pv = None
+		global recorder
+		recorder = None
+
+		global actor
+		actor = Actor()
+
+		try:
+			pv = Picovoice(
+				access_key=self._access_key,
+				keyword_path=self._keyword_path(),
+				porcupine_sensitivity=0.75,
+				wake_word_callback=self._wake_word_callback,
+				context_path=self._context_path(),
+				inference_callback=self._inference_callback)
+
+			print(pv.context_info)
+
+			recorder = PvRecorder(device_index=-1, frame_length=pv.frame_length)
+			recorder.start()
+
+			self._is_ready = True
+
+			while not self._stop:
+				pcm = recorder.read()
+				pv.process(pcm)
+		finally:
+			if recorder is not None:
+				recorder.delete()
+
+			if pv is not None:
+				pv.delete()
+
+		self._is_stopped = True
+
+	def is_ready(self):
+		return self._is_ready
+
+	def stop(self):
+		self._stop = True
+
+	def is_stopped(self):
+		return self._is_stopped
+
+
 
 class Actor:
 	def __init__(self) -> None:
@@ -211,7 +414,7 @@ class Actor:
 		pyautogui.scroll(offset)
 
 	def _wake_word_callback(self):
-		img = Image.open("demo_screenshots/osler_awake.png").resize((self._width, self._height))
+		img = Image.open("demo_screenshots/osler_awake_smaller.png")
 		osler_awake = ImageTk.PhotoImage(img)
 		self._label.configure(image=osler_awake)
 		self._label.image = osler_awake
@@ -1291,6 +1494,9 @@ def msg2task(user_msg):
 	# perform task
 	actor.act(intent)
 
+
+
+
 # GUI
 root = Tk()
 root.title("OSLER")
@@ -1309,6 +1515,7 @@ DEVICE_SIZE = (1791, 1119)
 from google.oauth2 import service_account
 credentials = service_account.Credentials.from_service_account_file('./tortus-374118-e15fd1ca5b60.json')
 
+ACCESS_KEY = os.environ['PICOVOICE_ACCESS_KEY']
 
 # to prevent the huggingface tokenizer parallelisation error
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -1320,8 +1527,12 @@ actor = Actor()
 
 global_mrn = ''
 
-lable1 = Label(root, bg=BG_COLOR, fg=TEXT_COLOR, text="OSLER", font=FONT_BOLD, pady=10, width=20, height=1).grid(
-	row=0)
+# labe1 = Label(root, bg=BG_COLOR, fg=TEXT_COLOR, text="OSLER", font=FONT_BOLD, pady=10, width=20, height=1).grid(
+# 	row=0)
+
+img1 = ImageTk.PhotoImage(file="./demo_screenshots/osler_sleep_smaller.png")
+label = Label(root, bg=BG_COLOR, image=img1)
+label.grid(row=0)
  
 txt = Text(root, bg=BG_COLOR, fg=TEXT_COLOR, font=FONT, width=60)
 txt.grid(row=1, column=0, columnspan=2)
@@ -1334,5 +1545,10 @@ e.grid(row=2, column=0)
  
 send_button = Button(root, text="Send", font=FONT_BOLD, bg=BG_GRAY,
 			  command=send).grid(row=2, column=1)
+
+picovoice_thread = PicovoiceThread(label, ACCESS_KEY)
+picovoice_thread.start()
+while not picovoice_thread.is_ready():
+	pass
  
 root.mainloop()
