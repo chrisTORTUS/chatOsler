@@ -62,6 +62,9 @@ LEOPARD = pvleopard.create(access_key=os.environ['PICOVOICE_ACCESS_KEY'], model_
 PLAYER = MPyg123Player()
 
 
+def update_chat_text(msg):
+	txt.insert(END, "\n" + msg)
+
 class MicrophoneStream(object):
 	"""Opens a recording stream as a generator yielding the audio chunks."""
 
@@ -219,15 +222,30 @@ class PicovoiceThread(Thread):
 		self.get_user_utterance()
 		actor.user_utterance_text = self.leopard_transcribe()
 
+		# update the chat interface with the user command
+		update_chat_text("You -> " + actor.user_utterance_text)
+
 		# match the utterance to an intent
 		intent, score = self.match_intent(actor.user_utterance_text)
 		print(score)
 
 		# perform the action if match score above a cosine similarity threshold. Currently set at 0.5
 		if float(score) > 0.6:
+			# update the chat interface with the interpreted intent
+			update_chat_text("OSLER -> It looks like you asked me to perform the task: " + intent)
+
+			# extract mrn from utterance
+			if intent == intents.START_CONSULTATION_NOTE:
+				actor.global_mrn = actor.extract_mrn_from_utterance(actor.user_utterance_text)
+				print('mrn: ', actor.global_mrn)
+
 			self.osler_thinking()
 			actor.act(intent)
+
 		else:
+			# update the chat interface with message reporting unsupported command
+			update_chat_text("OSLER -> This request is not currently supported.")
+
 			#play the audio file
 			PLAYER.play_song("no_matched_intent.wav")
 			time.sleep(5)
@@ -335,8 +353,8 @@ class Actor:
 		self.patient_mrn_digits = '111'
 		self.med_hx = ''
 		self.letters_hx = ''
-
 		self.global_mrn = ''
+		self.consultation_done = False
 
 	def get_element_center(self, loc):
 		'''
@@ -355,11 +373,12 @@ class Actor:
 		loc = pyautogui.locateOnScreen(f"demo_screenshots/{screenshot}")
 		if loc is None:
 			print('cant find it!')
-			return
+			return 0
 			# raise Exception("Matching image not found on screen.")
 		x, y = self.get_element_center(loc)
 		print(f"Mouse click at: {x, y}")
 		pyautogui.click(x, y)
+		return 1
 		
 	def activate_application(self, app_name):
 		applescript_code = f'''
@@ -547,20 +566,26 @@ class Actor:
 			self.new_consultation_mrn()
 		elif intent == intents.TRANSCRIBE_CONSULTATION:
 			self.transcribe_consultation()
-		# elif intent == intents.QUERY_ORDERS:
-		#     self.query_orders()
-		# elif intent == intents.QUERY_MEDS:
-		#     self.query_meds()
+			self.consultation_done = True
 		elif intent == intents.WRITE_LETTER:
 			self.write_referral()
 		elif intent == intents.PLACE_ORDERS:
 			self.place_orders()
 		elif intent == intents.FILE_DIAGNOSES:
 			self.file_diagnoses()
+		elif intent == intents.LIST_ABILITIES:
+			self.list_abilities()
 		# elif intent == intents.ANSWER_QUESTIONS:
 		#     self.ask_general_consultation_question()
+		# elif intent == intents.QUERY_ORDERS:
+		#     self.query_orders()
+		# elif intent == intents.QUERY_MEDS:
+		#     self.query_meds()
 		else:
 			raise ValueError("unsupported intent '%s'" % intent)
+		
+		# update to sleeping mode after task done
+		picovoice_thread.osler_sleeping()
 		
 	def get_user_voice_response(self):
 		fs = 44100  # Sample rate
@@ -840,8 +865,11 @@ class Actor:
 				time.sleep(5)
 
 			if current_screen == 'documentation':
-				# click the create note button
-				# self.click_screenshot('create_note.png', confidence=0.6)
+				# use the accept button as a unique marker to check if note is already opened
+				if not pyautogui.locateOnScreen("demo_screenshots/accept.png", confidence=0.7, grayscale=True):
+					self.click_screenshot('create_note.png', confidence=0.6)
+					time.sleep(2)
+
 				time.sleep(2)
 				pyautogui.press('f3')
 				time.sleep(2)
@@ -857,7 +885,7 @@ class Actor:
 				time.sleep(1)
 
 				# add smart text medicines and problem list
-				pyautogui.write('.diagprob', interval=0.1)
+				pyautogui.write('.diagprobap', interval=0.1)
 				time.sleep(1)
 				pyautogui.press('enter')
 				time.sleep(1)
@@ -906,6 +934,11 @@ class Actor:
 		print(str(self.consultation_entities))
 
 	def place_orders(self):
+		# check if consultation has been done
+		if not self.consultation_done:
+			update_chat_text("OSLER -> You have not yet performed a consultation so this request is invalid")
+			return
+
 		# bring Epic window to the front
 		self.activate_application('Citrix Viewer')
 
@@ -935,7 +968,22 @@ class Actor:
 
 		pyautogui.press('escape')
 
+	def list_abilities(self):
+		abilities_msg = '''OSLER -> Hi! I'm Osler, your personal AI digital healthcare assistant. I can help you with the following:
+		\n- Starting a new consultation note
+		\n- Transcribing a consultation
+		\n- Placing orders mentioned in the consultation
+		\n- Filing diagnoses mentioned in the consultation
+		\n- Answering general questions about the consultation
+		'''
+		update_chat_text(abilities_msg)
+
 	def file_diagnoses(self):
+		# check if consultation has been done
+		if not self.consultation_done:
+			update_chat_text("OSLER -> You have not yet performed a consultation so this request is invalid")
+			return
+
 		diagnosis_list = self.get_diagnoses_from_gpt_call(self.consultation_entities)
 
 		# bring Epic window to the front
@@ -1419,6 +1467,7 @@ def match_intent(utterance):
 		intents.WRITE_LETTER,
 		intents.QUERY_MEDS,
 		intents.QUERY_ORDERS,
+		intents.LIST_ABILITIES
 ]
 
 	intent_embeddings = model.encode(intent_ls)
@@ -1431,7 +1480,6 @@ def match_intent(utterance):
 	cos = cos_argmax[0].item()
 
 	intent = intent_ls[cos]
-	print(f"Intent matched: {intent}")
 
 	return intent, cos_max
 
@@ -1456,8 +1504,6 @@ def match_screen(current_screen):
 	cos_argmax = torch.argmax(cos_scores_torch, dim=1)
 	cos = cos_argmax[0].item()
 
-
-	print(cos_scores)
 	intent = screens_ls[cos]
 	screen_name = screen_labels[cos]
 
@@ -1481,20 +1527,24 @@ def msg2task(user_msg):
 	intent, score = match_intent(user_msg)
 	print(score)
 
-	# if matched intent is starting a new consult note, attempt extract mrn from user message
-	if intent == 'start a consultation note':
-		actor.global_mrn = actor.extract_mrn_from_text(user_msg)
-		print('mrn: ', actor.global_mrn)
-	
-	# display matched intent to user
-	osler_message = "It looks like you asked me to perform the task: "
-	txt.insert(END, "\n" + "OSLER -> " + osler_message + intent)
-	# e.delete(0, END)
+	if float(score) > 0.6:
+		# if matched intent is starting a new consult note, attempt extract mrn from user message
+		if intent == intents.START_CONSULTATION_NOTE:
+			actor.global_mrn = actor.extract_mrn_from_text(user_msg)
+			print('mrn: ', actor.global_mrn)
 		
-	# perform task
-	actor.act(intent)
+		# display matched intent to user
+		osler_message = "It looks like you asked me to perform the task: "
+		txt.insert(END, "\n" + "OSLER -> " + osler_message + intent)
+		# e.delete(0, END)
+			
+		# perform task
+		picovoice_thread.osler_thinking()
+		actor.act(intent)
 
-
+	else:
+		# display matched intent to user
+		txt.insert(END, "\n" + "OSLER -> This request is not currently supported.")
 
 
 # GUI
